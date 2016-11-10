@@ -18,6 +18,10 @@ NP               = 1
 include ${PETSC_DIR}/lib/petsc/conf/variables
 include ${PETSC_DIR}/lib/petsc/conf/rules
 
+digit: digit.o  chkopts
+	 -${CLINKER} -o digit digit.o  ${PETSC_KSP_LIB}
+	 ${RM} digit.o
+
 ex1: ex1.o  chkopts
 	-${CLINKER} -o ex1 ex1.o  ${PETSC_KSP_LIB}
 	${RM} ex1.o
@@ -319,9 +323,6 @@ hellow: hellow.o  chkopts
 	 -${CLINKER} -o hellow hellow.o  ${PETSC_KSP_LIB}
 	 ${RM} hellow.o
 
-digit: digit.o  chkopts
-	 -${CLINKER} -o digit digit.o  ${PETSC_KSP_LIB}
-	 ${RM} digit.o
 
 #----------------------------------------------------------------------------
 runex1:
