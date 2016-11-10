@@ -166,11 +166,15 @@ PetscErrorCode feedforward(Vec x, Vec *result)
 
 PetscErrorCode SGD(int iter, int batch_size, float eta)
 {
-		
+
 }
 
 int main(int argc, char **argv)
 {
+	if (argc < 2) {
+		printf("Usgae ./digit <training_file>\n");
+		return;
+	}
 	char img_file[1024];
 	strcpy(img_file, argv[1]);
 
