@@ -159,9 +159,8 @@ PetscErrorCode init_network()
 
 	ierr = PetscMalloc1(layer_num - 1, &nabla_weights);CHKERRQ(ierr);
 	for (i = 1; i <layer_num; i++) {
-		
+		ierr = MatDuplicate(weights[i - 1], MAT_DO_NOT_COPY_VALUES, &nabla_weights[i - 1]);
 	}
-
 }
 
 PetscErrorCode sigmoid(Vec x, Vec r)
@@ -207,22 +206,21 @@ PetscErrorCode feedforward(Vec x, Vec *result)
 	*result = a;
 }
 
-PetscErrorCode train_small_batch(Vec *x_batch, Vec y_batch, int batch_size, float eta)
+PetscErrorCode train_small_batch(Vec *x_batch, Vec *y_batch, int batch_size, float eta)
 {
 	/*
 	nabla_b = [np.zeros(b.shape) for b in self.biases]
-    nabla_w = [np.zeros(w.shape) for w in self.weights]
-    for x, y in mini_batch:
-        delta_nabla_b, delta_nabla_w = self.backprop(x, y)
-        nabla_b = [nb+dnb for nb, dnb in zip(nabla_b, delta_nabla_b)]
-        nabla_w = [nw+dnw for nw, dnw in zip(nabla_w, delta_nabla_w)]
-    self.weights = [w-(eta/len(mini_batch))*nw
-                    for w, nw in zip(self.weights, nabla_w)]
-    self.biases = [b-(eta/len(mini_batch))*nb
-                   for b, nb in zip(self.biases, nabla_b)]
+        nabla_w = [np.zeros(w.shape) for w in self.weights]
+        for x, y in mini_batch:
+            delta_nabla_b, delta_nabla_w = self.backprop(x, y)
+            nabla_b = [nb+dnb for nb, dnb in zip(nabla_b, delta_nabla_b)]
+            nabla_w = [nw+dnw for nw, dnw in zip(nabla_w, delta_nabla_w)]
+        self.weights = [w-(eta/len(mini_batch))*nw
+                        for w, nw in zip(self.weights, nabla_w)]
+        self.biases = [b-(eta/len(mini_batch))*nb
+                       for b, nb in zip(self.biases, nabla_b)]
 	*/
-
-
+	
 }
 
 PetscErrorCode cost_derivative(Vec activation, Vec y)
@@ -239,10 +237,13 @@ PetscErrorCode backprop(Vec x, Vec y)
 	Vec *zs;
 	PetscInt i, j, n, nlocal;
 	PetscScalar *array;
-
-
-
 	n = layer_num - 1;
+
+	for (i = 0; i < n; i++) {
+		ierr = VecZeroEntries(nabla_biases[i]);CHKERRQ(ierr);
+		ierr = MatZeroEntries(nabla_weights[i]);CHKERRQ(ierr);
+	}
+
 	ierr = PetscMalloc1(n, &activations);CHKERRQ(ierr);
 	ierr = PetscMalloc1(n, &zs);CHKERRQ(ierr);
 	for (i = 0; i < n; i++) {
@@ -263,6 +264,48 @@ PetscErrorCode backprop(Vec x, Vec y)
 	
 	ierr = VecDestroy(&tmp_vec1);CHKERRQ(ierr);
 	ierr = VecDestroy(&tmp_vec2);CHKERRQ(ierr);
+
+	ierr = VecCopy(delta, nabla_biases[n - 1]);CHKERRQ(ierr);
+
+	//nabla_weights[n - 1] = np.dot(delta, activations[-2].transpose())
+	//? vector1 mx1 ; vector 2 nX1, transpose vector 2 => 1xn matrix
+
+
+	/*
+	1)mX1 vector or matrix?
+	2)how to convert a vector to a matrix
+	3)provide a result matrix to  MatMatMult, not create new, just copy?
+	4)Matrix point wise product?
+	*/
+
+	Mat mat_tmp1, mat_tmp2;
+	Mat mat_r;
+	ierr = MatMatMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &mat_r);CHKERRQ(ierr);
+	ierr = MatCopy(mat_r, nabla_weights[n - 1], SAME_NONZERO_PATTERN);CHKERRQ(ierr);
+	ierr = MatDestroy(&mat_r);CHKERRQ(ierr);
+
+	Vec sp;
+	Mat mat_tmp;
+	Vec delta_tmp;
+
+	for (i = 2; i < layer_num; i++) {
+		z = layer_outputs[layer_num - i];
+		
+		ierr = VecDuplicate(z, &sp);CHKERRQ(ierr);
+		sigmoid_prime(z, sp);
+		ierr = MatCreateTranspose(weights[layer_num - i + 1], &mat_tmp);CHKERRQ(ierr);
+		ierr = VecDuplicate(delta, &delta_tmp);CHKERRQ(ierr);
+		ierr = MatMult(mat_tmp, delta, delta_tmp);
+		ierr = VecPointwiseMult(delta, delta_tmp, sp);CHKERRQ(ierr);
+
+		nabla_b[-l] = delta
+		ierr = VecCopy(delta, nabla_b[layer_num - i]);CHKERRQ(ierr);
+        //nabla_w[-l] = np.dot(delta, activations[-l-1].transpose())
+
+		ierr = VecDestroy(&delta);
+		ierr = VecDestroy(&delta_tmp);
+		ierr = VecDestroy(&sp);
+	}
 
 }
 
