@@ -45,6 +45,9 @@ PetscErrorCode load_image(char *file_name)
 	for (i = 0; i < file_size; i++) {
 		if (buf[i] == '\n') {
 			training_count++;
+			if (training_count == 10) {
+				break;
+			}
 		}
 	}
 
@@ -87,6 +90,8 @@ PetscErrorCode load_image(char *file_name)
 			}
 			VecRestoreArray(training_x[index], &x_arr);
 			index ++;
+			if (index == 10)
+				break;
 		}
 	}
 	VecRestoreArray(training_y, &y_arr);
@@ -229,6 +234,21 @@ PetscErrorCode cost_derivative(Vec activation, Vec y)
 	ierr = VecAXPY(activation, a, y);CHKERRQ(ierr);
 }
 
+PetscErrorCode vec2mat_begin(Vec x, PetscScalar **p_arr, Mat *mat) {
+	PetscScalar *x_arr;
+	PetscScalar nlocal;
+	PetscInt one = 1;
+	ierr = VecGetArray(x,	&x_arr);CHKERRQ(ierr);
+	p_arr = &x_arr;
+	ierr = VecGetLocalSize(x, &nlocal);CHKERRQ(ierr);
+	ierr = MatCreateDense(PETSC_COMM_WORLD, nlocal, one, PETSC_DECIDE, PETSC_DECIDE, x_arr, mat);CHKERRQ(ierr);
+}
+
+PetscErrorCode vec2mat_end(Vec x, PetscScalar **p_arr, Mat *mat) {
+	ierr = VecRestoreArray(x, p_arr);CHKERRQ(ierr);
+	ierr = MatDestroy(mat);CHKERRQ(ierr);
+}
+
 PetscErrorCode backprop(Vec x, Vec y)
 {
 	Vec z;	
@@ -267,22 +287,14 @@ PetscErrorCode backprop(Vec x, Vec y)
 
 	ierr = VecCopy(delta, nabla_biases[n - 1]);CHKERRQ(ierr);
 
-	//nabla_weights[n - 1] = np.dot(delta, activations[-2].transpose())
-	//? vector1 mx1 ; vector 2 nX1, transpose vector 2 => 1xn matrix
-
-
-	/*
-	1)mX1 vector or matrix?
-	2)how to convert a vector to a matrix
-	3)provide a result matrix to  MatMatMult, not create new, just copy?
-	4)Matrix point wise product?
-	*/
-
 	Mat mat_tmp1, mat_tmp2;
-	Mat mat_r;
-	ierr = MatMatMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &mat_r);CHKERRQ(ierr);
-	ierr = MatCopy(mat_r, nabla_weights[n - 1], SAME_NONZERO_PATTERN);CHKERRQ(ierr);
-	ierr = MatDestroy(&mat_r);CHKERRQ(ierr);
+	PetscScalar **p_arr1;
+	PetscScalar **p_arr2;
+	ierr = vec2mat_begin(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
+	ierr = vec2mat_begin(activations[n - 2];, p_arr2, &mat_tmp2);CHKERRQ(ierr);
+	ierr = MatMatTransposeMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &nabla_weights[n - 1]);CHKERRQ(ierr);
+	ierr = vec2mat_end(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
+	ierr = vec2mat_end(activation, p_arr2, &mat_tmp2);CHKERRQ(ierr);
 
 	Vec sp;
 	Mat mat_tmp;
@@ -298,20 +310,19 @@ PetscErrorCode backprop(Vec x, Vec y)
 		ierr = MatMult(mat_tmp, delta, delta_tmp);
 		ierr = VecPointwiseMult(delta, delta_tmp, sp);CHKERRQ(ierr);
 
-		nabla_b[-l] = delta
 		ierr = VecCopy(delta, nabla_b[layer_num - i]);CHKERRQ(ierr);
-        //nabla_w[-l] = np.dot(delta, activations[-l-1].transpose())
+		
+		ierr = vec2mat_begin(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
+		ierr = vec2mat_begin(activations[n - i - 1], p_arr2, &mat_tmp2);CHKERRQ(ierr);
+		ierr = MatMatTransposeMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &nabla_weights[n - 1]);CHKERRQ(ierr);
+		ierr = vec2mat_end(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
+		ierr = vec2mat_end(activations[n - i - 1], p_arr2, &mat_tmp2);CHKERRQ(ierr);
 
 		ierr = VecDestroy(&delta);
 		ierr = VecDestroy(&delta_tmp);
 		ierr = VecDestroy(&sp);
 	}
-
 }
-
-
-
-PetscErrorCode get_training_data()
 
 PetscErrorCode SGD(int iter, int batch_size, float eta)
 {
@@ -342,7 +353,7 @@ int main(int argc, char **argv)
 
 	init_network();
 
-	SGD(30, 10, )
+	//SGD(30, 10, )
 
 	PetscFinalize();
 	
