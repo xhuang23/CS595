@@ -11,13 +11,18 @@
 #include <petscvec.h>
 #include <petscmat.h>
 
+#define IMAGE_SIZE 28*28
+#define OUTPUT_SIZE 10
 
 PetscMPIInt rank;
 PetscInt input_x_size;
 PetscInt layer_num;
-PetscInt training_count;
-Vec *training_x;
-Vec training_y;
+
+PetscInt data_size;
+PetscInt train_size;
+PetscInt test_size;
+
+Vec train_x, train_y;
 
 Vec *neurons;
 Vec *biases;
@@ -26,11 +31,19 @@ Mat *weights;
 Vec *nabla_biases, *delta_nabla_biases;
 Mat *nabla_weights *delta_nabla_weights;
 
-
 Vec *layer_outputs;
 Vec *activations;
 PetscErrorCode ierr;
 PetscMPIInt    rank;
+
+typedef struct DigitImage
+{
+	int digit;
+	unsigned char *values;
+}DigitImage;
+
+DigitImage *train_set;
+DigitImage *test_set;
 
 PetscErrorCode load_image(char *file_name)
 {
@@ -41,61 +54,57 @@ PetscErrorCode load_image(char *file_name)
 	rewind(fp);
 	char *buf = malloc(file_size);
 	fread(buf, 1, file_size, fp);
-	int i;
+	size_t i;
 	training_count = 0;
 	for (i = 0; i < file_size; i++) {
 		if (buf[i] == '\n') {
-			training_count++;
-			if (training_count == 10) {
-				break;
-			}
+			data_size++;
 		}
 	}
 
-	PetscScalar *x_arr, *y_arr;
-
-	ierr = VecCreate(PETSC_COMM_WORLD, &training_y);CHKERRQ(ierr);
-	ierr = VecSetSizes(training_y, PETSC_DECIDE, training_count);CHKERRQ(ierr);
-	ierr = VecSetFromOptions(training_y);CHKERRQ(ierr);
-	ierr = VecGetArray(training_y, &y_arr);
+	train_size = data_size * 2 / 3;
+	test_size = data_size -  train_size;
 
 	char *p1, *p2, *p;
 	p1 = buf;
 	int index = 0;
 	char tmp[10];
 	int j;
-	int input_x_size = 28 * 28;
-	ierr = PetscMalloc1(training_count, &training_x);CHKERRQ(ierr);
+
+	train_set = (DigitImage *)malloc(train_size * sizeof(DigitImage));
+	test_set = (DigitImage *)malloc(test_size * sizeof(DigitImage));
+
+	DigitImage *img_set;
 	for (i = 0; i < file_size; i++) {
 		if (buf[i] == '\n') {
-			ierr = VecCreate(PETSC_COMM_WORLD, &training_x[index]);CHKERRQ(ierr);
-			ierr = VecSetSizes(training_x[index], PETSC_DECIDE, input_x_size);CHKERRQ(ierr);
-			ierr = VecSetFromOptions(training_x[index]);;CHKERRQ(ierr);
-			ierr = VecGetArray(training_x[index], &x_arr);
+			if (index < train_size) {
+				img_set = train_set;
+			} else {
+				img_set = test_set;
+			}
 
 			p2 = &buf[i];
 			strncpy(tmp, p1, 1);
-			y_arr[index] = atof(tmp);
 
+			img_set[index].digit = atof(tmp);
+			img_set[index].values = (unsigned char*)malloc(IMAGE_SIZE);
+			
 			p1 += 2;
 			p = p1 + 1;
 			j = 0;
 			while (p < p2) {
 				if (*p == ',' || *p == '\r') {
 					strncpy(tmp, p1, p - p1);
-					x_arr[j++] = atof(tmp);
+					img_set[index].values[j++] = atoi(tmp);
 					p1 = p + 1;
 					p = p1 + 1;					
 				}
 				p++;
 			}
-			VecRestoreArray(training_x[index], &x_arr);
 			index ++;
-			if (index == 10)
-				break;
 		}
 	}
-	VecRestoreArray(training_y, &y_arr);
+
 	free(buf);
 	fclose(fp);
 }
@@ -104,7 +113,7 @@ PetscErrorCode init_network()
 {
 	layer_num = 3;
 	
-	int layer_sizes[3] = {28 * 28, 30, 10};
+	int layer_sizes[3] = {IMAGE_SIZE, 30, OUTPUT_SIZE};
 
 	PetscRandom rnd;
 	PetscScalar value;
@@ -159,8 +168,6 @@ PetscErrorCode init_network()
 		ierr = MatDenseRestoreArray(weights[i - 1], &array);CHKERRQ(ierr);
 	}
 
-
-
 	ierr = PetscMalloc1(layer_num - 1, &nabla_biases);CHKERRQ(ierr);
 	ierr = PetscMalloc1(layer_num - 1, &delta_nabla_biases);CHKERRQ(ierr);
 	for (i = 1; i <layer_num; i++) {
@@ -214,7 +221,7 @@ PetscErrorCode feedforward(Vec x, Vec *result)
 	PetscInt i, j, nlocal;
 	PetscScalar *array;
 	ierr = VecDuplicate(x, &a);CHKERRQ(ierr);
-	int n = layer_num = -1;
+	int n = layer_num -1;
 	for (i = 0; i < n; i++) {
 		ierr = VecDuplicate(biases[i], &y);CHKERRQ(ierr);
 		ierr = MatMultAdd(weights[i], a, biases[i], y);CHKERRQ(ierr);
@@ -228,20 +235,59 @@ PetscErrorCode feedforward(Vec x, Vec *result)
 	*result = a;
 }
 
-PetscErrorCode train_small_batch(Vec *x_batch, Vec *y_batch, int batch_size, float eta)
+void set_vector_x(Vec x, DigitImage *img)
+{
+	PetscInt i, n;
+	PetscScalar val;
+	
+	ierr = VecGetSize(x, &n);CHKERRQ(ierr);
+	for (i = 0; i < n; i++) {
+		val = img->values[i];
+		ierr = VecSetValues(x, 1, &i, val, INSERT_VALUES);
+	}
+	VecAssemblyBegin(x);
+ 	VecAssemblyEnd(x);
+}
+
+void set_vector_y(Vec y, DigitImage *img)
+{
+	PetscInt i, n;
+	PetscScalar val;
+	
+	ierr = VecGetSize(y, &n);CHKERRQ(ierr);
+ 	ierr = VecGetSize(y, &n);CHKERRQ(ierr);
+	for (i = 0; i < n; i++) {
+		if (i == img->digit) {
+			val = 1.0;
+		} else {
+			val = 0.0;
+		}
+		ierr = VecSetValues(y, 1, &i, val, INSERT_VALUES);
+	}
+	VecAssemblyBegin(y);
+ 	VecAssemblyEnd(y);
+}
+
+
+PetscErrorCode train_small_batch(int start_pos, int batch_size, float eta)
 {
 	int i, j;
+
 	for (i = 0; i < layer_num; i++) {
 		ierr = VecZeroEntries(nabla_biases[i]);CHKERRQ(ierr);
 		ierr = MatZeroEntries(nabla_weights[i]);CHKERRQ(ierr);
 	}
 	PetscScalar alpha = 1;
-	for (i = 0; i < batch_size; i++) {
-		backprop(x_batch[i], y_batch[i]);
+	int n = start_pos + batch_size;
+	for (i = start_pos; i < n; i++) {
+		set_vector_x(train_x, &train_set[i]);
+		set_vector_y(train_y, &train_set[i]);
+		backprop();
 		for (j = 0; j < layer_num; j++) {
 			ierr = VecAXPY(nabla_biases[i], alpha, delta_nabla_biases[i]);CHKERRQ(ierr);
 			ierr = MatAXPY(nabla_weights[i], alpha, delta_nabla_weights[i]);CHKERRQ(ierr);
 		}
+
 	}
 
 	alpha = - eta/batch_size;
@@ -272,10 +318,10 @@ PetscErrorCode vec2mat_end(Vec x, PetscScalar **p_arr, Mat *mat) {
 	ierr = MatDestroy(mat);CHKERRQ(ierr);
 }
 
-PetscErrorCode backprop(Vec x, Vec y)
+PetscErrorCode backprop()
 {
 	Vec z;	
-	Vec activation = x;
+	Vec activation = train_x;
 	Vec *activations;
 	Vec *zs;
 	PetscInt i, j, n, nlocal;
@@ -296,7 +342,7 @@ PetscErrorCode backprop(Vec x, Vec y)
 
 	Vec tmp_vec1;
 	ierr = VecDuplicate(activations[n - 1], &tmp_vec1);CHKERRQ(ierr);
-	ierr = cost_derivative(tmp_vec1, y);CHKERRQ(ierr);
+	ierr = cost_derivative(tmp_vec1, train_y);CHKERRQ(ierr);
 	Vec tmp_vec2;
 	ierr = VecDuplicate(layer_outputs[n - 1], &tmp_vec2);CHKERRQ(ierr);
 	sigmoid_prime(layer_outputs[n - 1], tmp_vec2);CHKERRQ(ierr);
@@ -347,15 +393,97 @@ PetscErrorCode backprop(Vec x, Vec y)
 	}
 }
 
-PetscErrorCode SGD(int iter, int batch_size, float eta)
+void shuffle_train_set()
 {
-	int i, k;
-	for (i = 0; i < iter; i++) {
-		//shuffle training data
-		for (k = 0; k < training_count; k += batch_size) {
-			train_small_batch(x_batch, y_batch, batch_size, eta);
+	int i, pos, digit;
+	unsigned char *p;
+	for (i = 0; i < train_size; i++) {
+		pos = rand() % train_size;
+		if (pos != i) {
+			digit = train_set[pos].digit;
+			p = train_set[pos].values;
+			train_set[pos].digit = train_set[i].digit;
+			train_set[pos].values = train_set[i].values;
+			train_set[i].digit = digit;
+			train_set[i].values = p;
 		}
 	}
+}
+
+void create_input_vector()
+{
+	ierr = VecCreate(PETSC_COMM_WORLD, &train_x);CHKERRQ(ierr);
+	ierr = VecSetSizes(train_x, PETSC_DECIDE, IMAGE_SIZE);CHKERRQ(ierr);
+	ierr = VecSetFromOptions(train_x);CHKERRQ(ierr);
+
+	ierr = VecCreate(PETSC_COMM_WORLD, &train_y);CHKERRQ(ierr);
+	ierr = VecSetSizes(train_y, PETSC_DECIDE, OUTPUT_SIZE);CHKERRQ(ierr);
+	ierr = VecSetFromOptions(train_y);CHKERRQ(ierr);
+}
+
+PetscErrorCode train(int iter, int batch_size, float eta)
+{
+	int i, k;
+	int real_batch_size;
+
+	for (i = 0; i < iter; i++) {
+		shuffle_train_set();
+		for (k = 0; k < train_size; k += batch_size) {
+			if (k + batch_size - 1 < train_size) {
+				real_batch_size = batch_size;
+			} else {
+				real_batch_size = train_size - k;
+			}
+
+			train_small_batch(k, real_batch_size, eta);
+		}
+	}
+}
+
+void evaluate()
+{
+	int i, j, max_pos;
+    Vec r;
+	Vec test_x;
+    Vec test_y;
+    PetscInt ix[OUTPUT_SIZE];
+    PetscScalar values[OUTPUT_SIZE];
+    PetscScalar max_value;
+
+    PetscInt correct_count = 0;
+
+    if (rank == 0) {
+    	for (i = 0; i < OUTPUT_SIZE; i++) {
+    		ix[i] = i;	
+    	}
+    }
+
+    ierr = VecDuplicate(train_x, &test_x);CHKERRQ(ierr);
+
+    if (i = 0; i < test_size; i++) {
+    	set_vector_x(test_x, &test_set[i]);
+    	feedforward(test_x, &r);
+    	if (rank == 0) {
+    		ierr = VecGetValues(r, OUTPUT_SIZE, ix, values);CHKERRQ(ierr);
+    		max_value = values[0];
+    		max_pos = 0;
+    		for (j = 0; j < OUTPUT_SIZE; j++) {
+    			if (values[j] > max_value) {
+    				max_value = values[j];
+    				max_pos = j; 
+    			}
+    		}
+    		if (max_pos == test_set[i]->digit) {
+    			correct_count++;
+    		}
+    	}
+    	ierr = VecDestroy(&r);CHKERRQ(ierr);
+    }
+
+    if (rank == 0) {
+    	float correct_rate = correct_count * 1.0/ test_size;
+    	printf("\ntest size:%d correct count:%d correct rate:%f\n", test_size, correct_count, correct_rate);
+    }
 }
 
 int main(int argc, char **argv)
@@ -364,6 +492,9 @@ int main(int argc, char **argv)
 		printf("Usgae ./digit <training_file>\n");
 		return;
 	}
+	time_t t;
+	srand((unsigned) time(&t));
+
 	char img_file[1024];
 	strcpy(img_file, argv[1]);
 
@@ -374,7 +505,11 @@ int main(int argc, char **argv)
 
 	init_network();
 
-	//SGD(30, 10, )
+	create_input_vector();
+
+	train(30, 10, 3.0);
+
+	evaluate();
 
 	PetscFinalize();
 	
