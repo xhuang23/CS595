@@ -23,8 +23,9 @@ Vec *neurons;
 Vec *biases;
 Mat *weights;
 
-Vec *nabla_biases;
-Mat *nabla_weights;
+Vec *nabla_biases, *delta_nabla_biases;
+Mat *nabla_weights *delta_nabla_weights;
+
 
 Vec *layer_outputs;
 Vec *activations;
@@ -135,10 +136,6 @@ PetscErrorCode init_network()
  		VecDuplicate(biases[i - 1], &activations[i]);
 	}
 
-	ierr = PetscMalloc1(layer_num - 1, &nabla_biases);CHKERRQ(ierr);
-	for (i = 1; i <layer_num; i++) {
-		ierr = VecDuplicate(biases[i - 1], &nabla_biases[i - 1]);CHKERRQ(ierr);
-	}
 
 	PetscInt row, col, m, n;
 	ierr = PetscMalloc1(layer_num - 1, &weights);CHKERRQ(ierr);
@@ -162,9 +159,20 @@ PetscErrorCode init_network()
 		ierr = MatDenseRestoreArray(weights[i - 1], &array);CHKERRQ(ierr);
 	}
 
+
+
+	ierr = PetscMalloc1(layer_num - 1, &nabla_biases);CHKERRQ(ierr);
+	ierr = PetscMalloc1(layer_num - 1, &delta_nabla_biases);CHKERRQ(ierr);
+	for (i = 1; i <layer_num; i++) {
+		ierr = VecDuplicate(biases[i - 1], &nabla_biases[i - 1]);CHKERRQ(ierr);
+		ierr = VecDuplicate(biases[i - 1], &delta_nabla_biases[i - 1]);CHKERRQ(ierr);
+	}
+
 	ierr = PetscMalloc1(layer_num - 1, &nabla_weights);CHKERRQ(ierr);
+	ierr = PetscMalloc1(layer_num - 1, &delta_nabla_weights);CHKERRQ(ierr);
 	for (i = 1; i <layer_num; i++) {
 		ierr = MatDuplicate(weights[i - 1], MAT_DO_NOT_COPY_VALUES, &nabla_weights[i - 1]);
+		ierr = MatDuplicate(weights[i - 1], MAT_DO_NOT_COPY_VALUES, &delta_nabla_weights[i - 1]);
 	}
 }
 
@@ -175,13 +183,15 @@ PetscErrorCode sigmoid(Vec x, Vec r)
 	
 	ierr = VecCopy(x, r);	
 
+
+
 	ierr = VecGetLocalSize(r, &nlocal);CHKERRQ(ierr);
 	ierr = VecGetArray(r, &array);CHKERRQ(ierr);
 	for (i = 0; i < nlocal; i++) {
 		z = array[i];
 		array[i] = 1.0/(1.0 + exp(-z));
 	}
-	VecRestoreArray(r, &array);
+	ierr = VecRestoreArray(r, &array);CHKERRQ(ierr);
 }
 
 PetscErrorCode sigmoid_prime(Vec z, Vec r)
@@ -199,33 +209,46 @@ PetscErrorCode sigmoid_prime(Vec z, Vec r)
 
 PetscErrorCode feedforward(Vec x, Vec *result)
 {
-	Vec a = x;
-	Vec y;
+	Vec a;
+	Vec y, r;
 	PetscInt i, j, nlocal;
 	PetscScalar *array;
-	for (i = 1; i < layer_num; i++) {
-		ierr = MatMultAdd(weights[i - 1], a, biases[i - 1], y);CHKERRQ(ierr);
-		sigmoid(y);
-		a = y;
+	ierr = VecDuplicate(x, &a);CHKERRQ(ierr);
+	int n = layer_num = -1;
+	for (i = 0; i < n; i++) {
+		ierr = VecDuplicate(biases[i], &y);CHKERRQ(ierr);
+		ierr = MatMultAdd(weights[i], a, biases[i], y);CHKERRQ(ierr);
+		ierr = VecDuplicate(biases[i], &r);CHKERRQ(ierr);
+		sigmoid(y, r);
+		ierr = VecDestroy(&y);CHKERRQ(ierr);
+		ierr = VecDestroy(&a);CHKERRQ(ierr);
+		ierr = VecDuplicate(r, &a);CHKERRQ(ierr);
+		ierr = VecDestroy(&r);CHKERRQ(ierr);
 	}
 	*result = a;
 }
 
 PetscErrorCode train_small_batch(Vec *x_batch, Vec *y_batch, int batch_size, float eta)
 {
-	/*
-	nabla_b = [np.zeros(b.shape) for b in self.biases]
-        nabla_w = [np.zeros(w.shape) for w in self.weights]
-        for x, y in mini_batch:
-            delta_nabla_b, delta_nabla_w = self.backprop(x, y)
-            nabla_b = [nb+dnb for nb, dnb in zip(nabla_b, delta_nabla_b)]
-            nabla_w = [nw+dnw for nw, dnw in zip(nabla_w, delta_nabla_w)]
-        self.weights = [w-(eta/len(mini_batch))*nw
-                        for w, nw in zip(self.weights, nabla_w)]
-        self.biases = [b-(eta/len(mini_batch))*nb
-                       for b, nb in zip(self.biases, nabla_b)]
-	*/
-	
+	int i, j;
+	for (i = 0; i < layer_num; i++) {
+		ierr = VecZeroEntries(nabla_biases[i]);CHKERRQ(ierr);
+		ierr = MatZeroEntries(nabla_weights[i]);CHKERRQ(ierr);
+	}
+	PetscScalar alpha = 1;
+	for (i = 0; i < batch_size; i++) {
+		backprop(x_batch[i], y_batch[i]);
+		for (j = 0; j < layer_num; j++) {
+			ierr = VecAXPY(nabla_biases[i], alpha, delta_nabla_biases[i]);CHKERRQ(ierr);
+			ierr = MatAXPY(nabla_weights[i], alpha, delta_nabla_weights[i]);CHKERRQ(ierr);
+		}
+	}
+
+	alpha = - eta/batch_size;
+	for (i =0; i < layer_num; i++) {
+		ierr = VecAXPY(biases[i], alpha, nabla_biases[i]);CHKERRQ(ierr);
+		ierr = MatAXPY(weights[i], alpha, nabla_weights[i]);CHKERRQ(ierr);
+	}
 }
 
 PetscErrorCode cost_derivative(Vec activation, Vec y)
@@ -260,8 +283,8 @@ PetscErrorCode backprop(Vec x, Vec y)
 	n = layer_num - 1;
 
 	for (i = 0; i < n; i++) {
-		ierr = VecZeroEntries(nabla_biases[i]);CHKERRQ(ierr);
-		ierr = MatZeroEntries(nabla_weights[i]);CHKERRQ(ierr);
+		ierr = VecZeroEntries(delta_nabla_biases[i]);CHKERRQ(ierr);
+		ierr = MatZeroEntries(delta_nabla_weights[i]);CHKERRQ(ierr);
 	}
 
 	ierr = PetscMalloc1(n, &activations);CHKERRQ(ierr);
@@ -285,14 +308,14 @@ PetscErrorCode backprop(Vec x, Vec y)
 	ierr = VecDestroy(&tmp_vec1);CHKERRQ(ierr);
 	ierr = VecDestroy(&tmp_vec2);CHKERRQ(ierr);
 
-	ierr = VecCopy(delta, nabla_biases[n - 1]);CHKERRQ(ierr);
+	ierr = VecCopy(delta, delta_nabla_biases[n - 1]);CHKERRQ(ierr);
 
 	Mat mat_tmp1, mat_tmp2;
 	PetscScalar **p_arr1;
 	PetscScalar **p_arr2;
 	ierr = vec2mat_begin(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
 	ierr = vec2mat_begin(activations[n - 2];, p_arr2, &mat_tmp2);CHKERRQ(ierr);
-	ierr = MatMatTransposeMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &nabla_weights[n - 1]);CHKERRQ(ierr);
+	ierr = MatMatTransposeMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &delta_nabla_weights[n - 1]);CHKERRQ(ierr);
 	ierr = vec2mat_end(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
 	ierr = vec2mat_end(activation, p_arr2, &mat_tmp2);CHKERRQ(ierr);
 
@@ -310,11 +333,11 @@ PetscErrorCode backprop(Vec x, Vec y)
 		ierr = MatMult(mat_tmp, delta, delta_tmp);
 		ierr = VecPointwiseMult(delta, delta_tmp, sp);CHKERRQ(ierr);
 
-		ierr = VecCopy(delta, nabla_b[layer_num - i]);CHKERRQ(ierr);
+		ierr = VecCopy(delta, delta_nabla_b[layer_num - i]);CHKERRQ(ierr);
 		
 		ierr = vec2mat_begin(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
 		ierr = vec2mat_begin(activations[n - i - 1], p_arr2, &mat_tmp2);CHKERRQ(ierr);
-		ierr = MatMatTransposeMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &nabla_weights[n - 1]);CHKERRQ(ierr);
+		ierr = MatMatTransposeMult(mat_tmp1, mat_tmp2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &delta_nabla_weights[n - 1]);CHKERRQ(ierr);
 		ierr = vec2mat_end(delta, p_arr1, &mat_tmp1);CHKERRQ(ierr);
 		ierr = vec2mat_end(activations[n - i - 1], p_arr2, &mat_tmp2);CHKERRQ(ierr);
 
@@ -330,9 +353,7 @@ PetscErrorCode SGD(int iter, int batch_size, float eta)
 	for (i = 0; i < iter; i++) {
 		//shuffle training data
 		for (k = 0; k < training_count; k += batch_size) {
-
 			train_small_batch(x_batch, y_batch, batch_size, eta);
-
 		}
 	}
 }
