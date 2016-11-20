@@ -70,10 +70,23 @@ int main(int argc, char **argv)
 	PetscInitialize(&argc, &argv, NULL, NULL);
 	MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
 	
+	char buffer[100] = {'\0'};
 	if (rank == 0) {
-		load_image(img_file);	
+		load_image(img_file);
+		sprintf(buffer, "%d,%d", train_size, test_size);	
 	}
+
+	MPI_Bcast(buffer, 100, MPI_CHAR, 0, MPI_COMM_WORLD);
 	
+	if (rank != 0) {
+		const char sep[2] = ",";
+		char *token;
+		token = strtok(buffer, sep);
+		train_size = atoi(token);
+		token = strtok(NULL, sep);
+		test_size = atoi(token);
+	}
+
 	init_network();
 
 	create_input_vector();
@@ -205,14 +218,12 @@ PetscErrorCode init_network()
 		m = layer_sizes[i];
 		n = layer_sizes[i - 1];
 		
-		ierr = MatCreateDense(PETSC_COMM_WORLD, PETSC_DECIDE, PETSC_DECIDE, m, n, NULL, &weights[i - 1]);
-		/*
 		ierr = MatCreate(PETSC_COMM_WORLD,&weights[i - 1]);CHKERRQ(ierr);
 		ierr = MatSetSizes(weights[i - 1], PETSC_DECIDE, PETSC_DECIDE, m, n);CHKERRQ(ierr);
-		ierr = MatSetType(weights[i - 1], MATDENSE);CHKERRQ(ierr);
+		ierr = MatSetType(weights[i - 1], MATELEMENTAL);CHKERRQ(ierr);
 		ierr = MatSetFromOptions(weights[i - 1]);CHKERRQ(ierr);
 		ierr = MatSetUp(weights[i - 1]);CHKERRQ(ierr);
-		*/
+		
 		ierr = MatGetLocalSize(weights[i - 1], &mlocal, &nlocal);CHKERRQ(ierr);
 		ierr = MatDenseGetArray(weights[i - 1], &array);CHKERRQ(ierr);
 		for (col = 0; col < nlocal; col++) {
@@ -297,17 +308,17 @@ PetscErrorCode feedforward(Vec x, Vec *result)
 
 PetscErrorCode set_vector_x(Vec x, DigitImage *img)
 {
-	if (rank != 0) {
-		return 0;
-	}
 	PetscInt i, n;
 	PetscScalar val;
-	
-	ierr = VecGetSize(x, &n);CHKERRQ(ierr);
-	for (i = 0; i < n; i++) {
-		val = img->values[i];
-		ierr = VecSetValues(x, 1, &i, &val, INSERT_VALUES);
+
+	if (rank == 0) {
+		ierr = VecGetSize(x, &n);CHKERRQ(ierr);
+		for (i = 0; i < n; i++) {
+			val = img->values[i];
+			ierr = VecSetValues(x, 1, &i, &val, INSERT_VALUES);
+		}	
 	}
+	
 	VecAssemblyBegin(x);
  	VecAssemblyEnd(x);
  	return 0;
@@ -315,23 +326,22 @@ PetscErrorCode set_vector_x(Vec x, DigitImage *img)
 
 PetscErrorCode set_vector_y(Vec y, DigitImage *img)
 {
-	if (rank != 0) {
-		return 0;
-	}
-
 	PetscInt i, n;
 	PetscScalar val;
 	
-	ierr = VecGetSize(y, &n);CHKERRQ(ierr);
- 	ierr = VecGetSize(y, &n);CHKERRQ(ierr);
-	for (i = 0; i < n; i++) {
-		if (i == img->digit) {
-			val = 1.0;
-		} else {
-			val = 0.0;
-		}
-		ierr = VecSetValues(y, 1, &i, &val, INSERT_VALUES);
+	if (rank == 0) {
+		ierr = VecGetSize(y, &n);CHKERRQ(ierr);
+	 	ierr = VecGetSize(y, &n);CHKERRQ(ierr);
+		for (i = 0; i < n; i++) {
+			if (i == img->digit) {
+				val = 1.0;
+			} else {
+				val = 0.0;
+			}
+			ierr = VecSetValues(y, 1, &i, &val, INSERT_VALUES);
+		}		
 	}
+
 	VecAssemblyBegin(y);
  	VecAssemblyEnd(y);
  	return 0;
@@ -342,22 +352,24 @@ PetscErrorCode train_small_batch(int start_pos, int batch_size, float eta)
 {
 	int i, j;
 	int m = layer_num - 1;
-
+	
 	for (i = 0; i < m; i++) {
 		ierr = VecZeroEntries(nabla_biases[i]);CHKERRQ(ierr);
 		ierr = MatZeroEntries(nabla_weights[i]);CHKERRQ(ierr);
 	}
+
 	PetscScalar alpha = 1;
 	int n = start_pos + batch_size;
 	for (i = start_pos; i < n; i++) {
 		set_vector_x(train_x, &train_set[i]);
 		set_vector_y(train_y, &train_set[i]);
+
 		backprop();
+		
 		for (j = 0; j < m; j++) {
 			ierr = VecAXPY(nabla_biases[j], alpha, delta_nabla_biases[j]);CHKERRQ(ierr);
 			ierr = MatAXPY(nabla_weights[j], alpha, delta_nabla_weights[j], SAME_NONZERO_PATTERN);CHKERRQ(ierr);
 		}
-
 	}
 
 	alpha = - eta/batch_size;
@@ -380,10 +392,18 @@ PetscErrorCode vec2mat_begin(Vec x, PetscScalar **p_arr, Mat *mat)
 	PetscScalar *x_arr;
 	PetscInt nlocal;
 	PetscInt one = 1;
-	ierr = VecGetArray(x,	&x_arr);CHKERRQ(ierr);
+	ierr = VecGetArray(x, &x_arr);CHKERRQ(ierr);
 	p_arr = &x_arr;
 	ierr = VecGetLocalSize(x, &nlocal);CHKERRQ(ierr);
-	ierr = MatCreateDense(PETSC_COMM_WORLD, nlocal, one, PETSC_DECIDE, PETSC_DECIDE, x_arr, mat);CHKERRQ(ierr);
+	
+	//ierr = MatCreateDense(PETSC_COMM_WORLD, nlocal, one, PETSC_DECIDE, PETSC_DECIDE, x_arr, mat);CHKERRQ(ierr);
+	
+	ierr = MatCreate(PETSC_COMM_WORLD,&weights[i - 1]);CHKERRQ(ierr);
+	ierr = MatSetSizes(weights[i - 1], PETSC_DECIDE, PETSC_DECIDE, m, n);CHKERRQ(ierr);
+	ierr = MatSetType(weights[i - 1], MATELEMENTAL);CHKERRQ(ierr);
+	ierr = MatSetFromOptions(weights[i - 1]);CHKERRQ(ierr);
+	ierr = MatSetUp(weights[i - 1]);CHKERRQ(ierr);
+
 	return 0;
 }
 
@@ -435,7 +455,7 @@ PetscErrorCode backprop()
 	
 	Mat mat_tmp2_transpose;
 	ierr = MatTranspose(mat_tmp2, MAT_INITIAL_MATRIX, &mat_tmp2_transpose);CHKERRQ(ierr);
-	ierr = MatMatMult(mat_tmp1 ,mat_tmp2_transpose, MAT_REUSE_MATRIX, PETSC_DEFAULT, &delta_nabla_weights[n - 1]);CHKERRQ(ierr);
+	ierr = MatMatMult(mat_tmp1 ,mat_tmp2_transpose, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &delta_nabla_weights[n - 1]);CHKERRQ(ierr);
 	ierr = MatDestroy(&mat_tmp2_transpose);CHKERRQ(ierr);
 	
 	ierr = vec2mat_end(delta, &arr1, &mat_tmp1);CHKERRQ(ierr);
@@ -448,6 +468,7 @@ PetscErrorCode backprop()
 		z = layer_outputs[n - i];
 		ierr = VecDuplicate(z, &sp);CHKERRQ(ierr);
 		sigmoid_prime(z, sp);
+
 		ierr = MatCreateTranspose(weights[n - i + 1], &mat_tmp);CHKERRQ(ierr);
 		ierr = MatMult(mat_tmp, delta_nabla_biases[n - i + 1], delta_nabla_biases[n - i]);
 		ierr = MatDestroy(&mat_tmp);CHKERRQ(ierr);
@@ -457,9 +478,7 @@ PetscErrorCode backprop()
 		ierr = vec2mat_begin(delta_nabla_biases[n - i], &arr1, &mat_tmp1);CHKERRQ(ierr);
 		ierr = vec2mat_begin(activations[layer_num - i - 1], &arr2, &mat_tmp2);CHKERRQ(ierr);
 		
-		ierr = MatTranspose(mat_tmp2, MAT_INITIAL_MATRIX, &mat_tmp2_transpose);CHKERRQ(ierr);
-		ierr = MatMatMult(mat_tmp1 ,mat_tmp2_transpose, MAT_REUSE_MATRIX, PETSC_DEFAULT, &delta_nabla_weights[n - i]);CHKERRQ(ierr);
-		ierr = MatDestroy(&mat_tmp2_transpose);CHKERRQ(ierr);
+		ierr = MatMatTransposeMult(mat_tmp1, mat_tmp2, MAT_REUSE_MATRIX, PETSC_DEFAULT, &delta_nabla_weights[n - i]);
 		
 		ierr = vec2mat_end(delta_nabla_biases[n - i], &arr1, &mat_tmp1);CHKERRQ(ierr);
 		ierr = vec2mat_end(activations[layer_num - i - 1], &arr2, &mat_tmp2);CHKERRQ(ierr);
@@ -471,6 +490,9 @@ PetscErrorCode backprop()
 
 void shuffle_train_set()
 {
+	if (rank != 0)
+		return;
+
 	int i, pos, digit;
 	unsigned char *p;
 	for (i = 0; i < train_size; i++) {
@@ -541,7 +563,7 @@ PetscErrorCode evaluate()
     char str_tmp[1024] = {'\0'};
     for (i = 0; i < test_size; i++) {
     	set_vector_x(test_x, &test_set[i]);	
-  
+
     	feedforward(test_x, &r);
     	if (rank == 0) {
     		ierr = VecGetValues(r, OUTPUT_SIZE, ix, values);CHKERRQ(ierr);
