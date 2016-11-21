@@ -426,22 +426,27 @@ PetscErrorCode vec2mat(Vec x, Mat *mat)
 	ierr = MatSetFromOptions(*mat);CHKERRQ(ierr);
 	ierr = MatSetUp(*mat);CHKERRQ(ierr);
 
-	PetscInt *rows, *cols;
-	PetscInt i, nrows, ncols;
-	nrows = nlocal;
-	ncols = one;
-	ierr = PetscMalloc1(nrows, &rows);
-	ierr = PetscMalloc1(ncols, &cols);
+	
+	IS isrows, iscols;
+	const PetscInt *rows, *cols;
+	PetscInt nrows, ncols;;
 
-	for (i = 0; i < nrows; i++) {
-		rows[i] = i;
-	}
-	for (i = 0; i < ncols; i++) {
-		cols[i] = i;
-	}
-	ierr = MatSetValues(*mat, nrows, rows, ncols, cols, x_arr, INSERT_VALUES);CHKERRQ(ierr);	
-	ierr = MatAssemblyBegin(*mat, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-	ierr = MatAssemblyEnd(*mat, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+	Mat A = *mat;
+	ierr = MatGetOwnershipIS(A, &isrows, &iscols);CHKERRQ(ierr);
+	ierr = ISGetLocalSize(isrows, &nrows);CHKERRQ(ierr);
+	ierr = ISGetIndices(isrows, &rows);CHKERRQ(ierr);
+	ierr = ISGetLocalSize(iscols, &ncols);CHKERRQ(ierr);
+	ierr = ISGetIndices(iscols, &cols);CHKERRQ(ierr);
+	
+	ierr = MatSetValues(A, nrows, rows, ncols, cols, x_arr, INSERT_VALUES);CHKERRQ(ierr);
+
+	ierr = MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+	ierr = MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+	ierr = ISRestoreIndices(isrows, &rows);CHKERRQ(ierr);
+	ierr = ISRestoreIndices(iscols, &cols);CHKERRQ(ierr);
+	ierr = ISDestroy(&isrows);CHKERRQ(ierr);
+	ierr = ISDestroy(&iscols);CHKERRQ(ierr);
+
 	ierr = VecRestoreArray(x, &x_arr);CHKERRQ(ierr);
 
 	return 0;
@@ -561,7 +566,9 @@ PetscErrorCode train(int iter, int batch_size, float eta)
 
 			train_small_batch(k, real_batch_size, eta);
 		}
-		printf("Iteration %d\n", i + 1);
+		if (rank == 0) {
+			printf("Iteration %d\n", i + 1);	
+		}
 	}
 	return 0;
 }
@@ -571,45 +578,57 @@ PetscErrorCode evaluate()
 	int i, j, max_pos;
     Vec r;
 	Vec test_x;
-    PetscInt ix[OUTPUT_SIZE];
-    PetscScalar values[OUTPUT_SIZE];
+	PetscInt *ix;
+	PetscScalar *values;
     PetscScalar max_value;
-
+    VecScatter scatter;
+    Vec local_r;
     PetscInt correct_count = 0;
+    ierr = VecDuplicate(train_x, &test_x);CHKERRQ(ierr);
+    char str_tmp[1024] = {'\0'};
 
     if (rank == 0) {
-    	for (i = 0; i < OUTPUT_SIZE; i++) {
-    		ix[i] = i;	
-    	}
+    	ierr = PetscMalloc1(OUTPUT_SIZE, &ix);CHKERRQ(ierr);
+		ierr = PetscMalloc1(OUTPUT_SIZE, &values);CHKERRQ(ierr);
+		for (i = 0; i < OUTPUT_SIZE; i++) {
+			ix[i] = i;
+		}
     }
 
-    ierr = VecDuplicate(train_x, &test_x);CHKERRQ(ierr);
-
-    char str_tmp[1024] = {'\0'};
     for (i = 0; i < test_size; i++) {
     	set_vector_x(test_x, &test_set[i]);	
-
     	feedforward(test_x, &r);
-    	if (rank == 0) {
-    		ierr = VecGetValues(r, OUTPUT_SIZE, ix, values);CHKERRQ(ierr);
-    		sprintf(str_tmp,"%f , %f , %f, %f , %f , %f, %f , %f , %f, %f\n", values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9]);
-    		printf(str_tmp);
-    		max_value = values[0];
-    		max_pos = 0;
-    		for (j = 0; j < OUTPUT_SIZE; j++) {
-    			if (values[j] > max_value) {
-    				max_value = values[j];
-    				max_pos = j; 
-    			}
-    		}
-    		if (max_pos == test_set[i].digit) {
-    			correct_count++;
-    		}
-    	}
+
+		ierr = VecScatterCreateToZero(r ,&scatter, &local_r);CHKERRQ(ierr);
+		ierr = VecScatterBegin(scatter, r, local_r, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+  		ierr = VecScatterEnd(scatter, r, local_r, INSERT_VALUES, SCATTER_FORWARD);CHKERRQ(ierr);
+		
+		if (rank == 0) {
+			ierr = VecGetValues(local_r, OUTPUT_SIZE, ix, values);
+			sprintf(str_tmp,"%f , %f , %f, %f , %f , %f, %f , %f , %f, %f\n", values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9]);
+			printf(str_tmp, "%s");
+			max_value = values[0];
+			max_pos = 0;
+			for (j = 0; j < OUTPUT_SIZE; j++) {
+				if (values[j] > max_value) {
+					max_value = values[j];
+					max_pos = j; 
+				}
+			}
+			if (max_pos == test_set[i].digit) {
+				correct_count++;
+			}
+		}
+
+		ierr = VecScatterDestroy(&scatter);CHKERRQ(ierr);
+		ierr = VecDestroy(&local_r);CHKERRQ(ierr);
     	ierr = VecDestroy(&r);CHKERRQ(ierr);
     }
 
     if (rank == 0) {
+    	ierr = PetscFree(ix);CHKERRQ(ierr);
+    	ierr = PetscFree(values);CHKERRQ(ierr);
+
     	float correct_rate = correct_count * 1.0/ test_size;
     	printf("test size:%d correct count:%d correct rate:%f\n", test_size, correct_count, correct_rate);
     }
