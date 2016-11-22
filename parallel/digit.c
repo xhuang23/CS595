@@ -54,6 +54,8 @@ void shuffle_train_set();
 PetscErrorCode create_input_vector();
 PetscErrorCode train(int iter, int batch_size, float eta);
 PetscErrorCode evaluate();
+PetscErrorCode print_vector(Vec x);
+void print_array(int size, unsigned char*arr);
 
 int main(int argc, char **argv)
 {
@@ -233,7 +235,7 @@ PetscErrorCode init_network()
 		ierr = VecSetFromOptions(biases[i - 1]);CHKERRQ(ierr);
 		
 		ierr = VecGetLocalSize(biases[i - 1], &nlocal);CHKERRQ(ierr);
- 		ierr = VecGetArray(biases[i - 1],	&array);CHKERRQ(ierr);
+ 		ierr = VecGetArray(biases[i - 1], &array);CHKERRQ(ierr);
  		for (j = 0; j < nlocal; j++) {
  			ierr = PetscRandomGetValue(rnd, &value);CHKERRQ(ierr);
  			array[j] = value;
@@ -330,6 +332,22 @@ PetscErrorCode feedforward(Vec x, Vec *result)
 	return 0;
 }
 
+void print_array(int size, unsigned char*arr)
+{
+	char str[4096] = {'\0'};
+	char str_tmp[10] = {'\0'};
+	int i = 0;
+	for (i = 0; i < size; i++) {
+		if (i == size - 1) {
+			sprintf(str_tmp, "%d", arr[i]);
+		} else {
+			sprintf(str_tmp, "%d,", arr[i]);
+		}
+		strcat(str, str_tmp);
+	}
+	printf("%s\n", str);
+}
+
 PetscErrorCode set_vector_x(Vec x, DigitImage *img)
 {
 	PetscInt i, n;
@@ -340,11 +358,12 @@ PetscErrorCode set_vector_x(Vec x, DigitImage *img)
 		for (i = 0; i < n; i++) {
 			val = img->values[i];
 			ierr = VecSetValues(x, 1, &i, &val, INSERT_VALUES);
-		}	
+		}
 	}
 	
 	VecAssemblyBegin(x);
  	VecAssemblyEnd(x);
+
  	return 0;
 }
 
@@ -450,6 +469,30 @@ PetscErrorCode vec2mat(Vec x, Mat *mat)
 	ierr = VecRestoreArray(x, &x_arr);CHKERRQ(ierr);
 
 	return 0;
+}
+
+PetscErrorCode print_vector(Vec x)
+{
+	char str[4096] = {'\0'};
+	char str_tmp[10] = {'\0'};
+	PetscInt nlocal, nglobal;
+	PetscScalar *arr;
+	ierr = VecGetSize(x, &nglobal);CHKERRQ(ierr);
+	ierr = VecGetLocalSize(x, &nlocal);CHKERRQ(ierr);
+ 	ierr = VecGetArray(x, &arr);CHKERRQ(ierr);
+ 	int i;
+ 	for (i = 0; i < nlocal; i++) {
+ 		if (i == nlocal - 1) {
+ 			sprintf(str_tmp, "%f", arr[i]); 
+ 		} else {
+ 			sprintf(str_tmp, "%f,", arr[i]);
+ 		}
+ 		strcat(str, str_tmp);
+ 	}
+
+ 	printf("global:%d local:%d values:%s\n", nglobal, nlocal, str);
+ 	ierr = VecRestoreArray(x, &arr);CHKERRQ(ierr);
+ 	return 0;
 }
 
 
