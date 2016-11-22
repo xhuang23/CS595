@@ -37,6 +37,11 @@ typedef struct DigitImage
 DigitImage *train_set;
 DigitImage *test_set;
 
+char hidden_layers[100]; //30:30
+int iteration_num;
+int train_batch_size;
+float learn_rate;
+
 void parse_image(char *buf, size_t buf_size, size_t *p_start, DigitImage *img_set, int set_size);
 void load_image(char *file_name);
 PetscErrorCode init_mat_random(Mat A, PetscRandom rnd);
@@ -59,8 +64,8 @@ void print_array(int size, unsigned char*arr);
 
 int main(int argc, char **argv)
 {
-	if (argc < 2) {
-		printf("Usgae ./digit <training_file>\n");
+	if (argc < 6) {
+		printf("Usgae ./digit <training file> <hidden layer info> <Iterations> <trainning batch size> <learning rate>\n");
 		return 0;
 	}
 	time_t t;
@@ -68,6 +73,14 @@ int main(int argc, char **argv)
 
 	char img_file[1024];
 	strcpy(img_file, argv[1]);
+	
+	strcpy(hidden_layers, argv[2]);
+
+	iteration_num = atoi(argv[3]);
+
+	train_batch_size = atoi(argv[4]);
+
+	learn_rate = atof(argv[5]);
 
 	PetscInitialize(&argc, &argv, NULL, NULL);
 	MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
@@ -93,7 +106,7 @@ int main(int argc, char **argv)
 
 	create_input_vector();
 
-	train(30, 10, 3.0);
+	train(iteration_num, train_batch_size, learn_rate);
 
 	evaluate();
 
@@ -211,9 +224,30 @@ PetscErrorCode init_mat_random(Mat A, PetscRandom rnd)
 
 PetscErrorCode init_network()
 {
-	layer_num = 3;
-	
-	int layer_sizes[3] = {IMAGE_SIZE, 30, OUTPUT_SIZE};
+	PetscInt i, j, nlocal;
+
+	int hidden_layer_num = 0;
+	char *layer_token;
+	const char sep[2] = ":";
+	char hidden_layers_temp[100];
+	strcpy(hidden_layers_temp, hidden_layers);
+	layer_token = strtok(hidden_layers, sep);
+	while (layer_token != NULL) {
+		hidden_layer_num += 1;
+		layer_token = strtok(NULL, sep);
+	}
+
+	//int layer_sizes[3] = {IMAGE_SIZE, 30, OUTPUT_SIZE};
+	layer_num = 2 + hidden_layer_num;
+	int *layer_sizes = malloc(layer_num * sizeof(int));
+	layer_sizes[0] = IMAGE_SIZE;
+	layer_sizes[layer_num - 1] = OUTPUT_SIZE;
+	int index = 1;
+	layer_token = strtok(hidden_layers_temp, sep);
+	while (layer_token != NULL) {
+		layer_sizes[index++] = atoi(layer_token);
+		layer_token = strtok(NULL, sep);
+	}
 
 	PetscRandom rnd;
 	PetscScalar value;
@@ -228,7 +262,6 @@ PetscErrorCode init_network()
 	ierr = VecSetSizes(activations[0], PETSC_DECIDE, IMAGE_SIZE);CHKERRQ(ierr);
 	ierr = VecSetFromOptions(activations[0]);CHKERRQ(ierr);
 
-	PetscInt i, j, nlocal;
 	for (i = 1; i <layer_num; i++) {
 		ierr = VecCreate(PETSC_COMM_WORLD, &biases[i - 1]);CHKERRQ(ierr);
 		ierr = VecSetSizes(biases[i - 1], PETSC_DECIDE, layer_sizes[i]);CHKERRQ(ierr);
